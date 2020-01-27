@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -25,6 +26,11 @@ const fileForm = `
   </body>
 </html>
 `
+
+type JsonLines struct {
+	Topic string        `json:"topic"`
+	Lines []interface{} `json:"lines"`
+}
 
 func uploadFile(w http.ResponseWriter, r *http.Request) {
 	log.Print("File Upload Endpoint Hit")
@@ -50,18 +56,41 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 		}
 		line = append(line, bytes...)
 		if !prefix {
-			err = writeToKafka(line)
+			err = writeToKafka(line, topic)
 			records++
 			line = make([]byte, 0)
 		}
 	}
 	if err != nil && err != io.EOF {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	fmt.Fprint(w, fmt.Sprintf("%d records written", records))
 }
 
-func writeToKafka(line []byte) error {
+func uploadJson(w http.ResponseWriter, r *http.Request) {
+	var lines JsonLines
+	err := json.NewDecoder(r.Body).Decode(&lines)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for _, line := range lines.Lines {
+		b, err := json.Marshal(line)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		err = writeToKafka([]byte(b), lines.Topic)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	fmt.Fprint(w, fmt.Sprintf("{\"records\": %d}", len(lines.Lines)))
+}
+
+func writeToKafka(line []byte, topic string) error {
 	return producer.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
 		Value:          line,
@@ -82,6 +111,8 @@ func main() {
 		log.Panic("KAFKA_BROKERS and KAFKA_TOPIC must be set")
 	}
 
+	log.Printf("Connecting to %s with topic %s\n", brokers, topic)
+
 	p, err := kafka.NewProducer(&kafka.ConfigMap{"bootstrap.servers": brokers})
 	producer = p
 
@@ -90,6 +121,7 @@ func main() {
 	}
 
 	http.HandleFunc("/upload", uploadFile)
+	http.HandleFunc("/rest", uploadJson)
 	http.HandleFunc("/", webForm)
 	http.ListenAndServe(":8080", nil)
 }
