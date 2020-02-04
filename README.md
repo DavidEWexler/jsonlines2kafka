@@ -1,0 +1,1 @@
+To install the packages required for kafka in go use `brew install librdkafka pkg-config`
